@@ -88,17 +88,27 @@ def ensure_numeric(df):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
 def compute_distances(df):
+    """Create STRIKE_DISTANCE / STRIKE_DISTANCE_PCT if possible and mark if selection is possible."""
+    df = df.copy()
     if "STRIKE" in df.columns and "UNDERLYING_LAST" in df.columns:
         if "STRIKE_DISTANCE" not in df.columns or df["STRIKE_DISTANCE"].isna().all():
             df["STRIKE_DISTANCE"] = df["STRIKE"] - df["UNDERLYING_LAST"]
         if "STRIKE_DISTANCE_PCT" not in df.columns or df["STRIKE_DISTANCE_PCT"].isna().all():
             with np.errstate(divide='ignore', invalid='ignore'):
                 df["STRIKE_DISTANCE_PCT"] = (df["STRIKE"] - df["UNDERLYING_LAST"]) / df["UNDERLYING_LAST"]
+        df["_can_select"] = True
+    else:
+        df["_can_select"] = False
     return df
 
 def select_10_above_below(df):
-    if df.empty: return df
-    df = compute_distances(df.copy())
+    if df.empty:
+        return df
+    df = compute_distances(df)
+    if "_can_select" not in df.columns or not bool(df["_can_select"].any()):
+        # No STRIKE/UNDERLYING_LAST available for this group
+        return df.iloc[0:0]
+
     above = df[df["STRIKE_DISTANCE"] >= 0].copy()
     below = df[df["STRIKE_DISTANCE"] < 0].copy()
     above["_abs"] = np.abs(above["STRIKE_DISTANCE"])
@@ -106,12 +116,13 @@ def select_10_above_below(df):
     above = above.sort_values("_abs", kind="stable").head(10)
     below = below.sort_values("_abs", kind="stable").head(10)
     out = pd.concat([below, above], ignore_index=True)
-    return out.drop(columns=["_abs"], errors="ignore")
+    return out.drop(columns=["_abs","_can_select"], errors="ignore")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", dest="out", required=True)
+    # accept TAB or comma+spaces by default
     ap.add_argument("--sep", default="(\\t|,\\s+)")
     ap.add_argument("--chunksize", type=int, default=250000)
     args = ap.parse_args()
@@ -121,23 +132,41 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     header_written = False
 
-    # Probe header to normalize names
-    sample = pd.read_csv(in_path, sep=args.sep, nrows=1, dtype=str,
-                     engine="python", on_bad_lines="skip", skipinitialspace=True)
+    # Read one line to normalize header names
+    sample = pd.read_csv(
+        in_path,
+        sep=args.sep,
+        nrows=1,
+        dtype=str,
+        engine="python",
+        on_bad_lines="skip",
+        skipinitialspace=True
+    )
     sample.columns = normalize_headers(sample.columns)
     usecols = list(set(sample.columns))  # read all available columns
 
-    dtype_map = {}
-    for col in usecols:
-        dtype_map[col] = NUMERIC.get(col, "string")
+    # Build dtype map
+    dtype_map = {col: NUMERIC.get(col, "string") for col in usecols}
 
-    for chunk in pd.read_csv(in_path, sep=args.sep, dtype=dtype_map, usecols=usecols, skipinitialspace=True,
-                             engine="python", on_bad_lines="skip", chunksize=args.chunksize):
+    # Stream read and process
+    for chunk in pd.read_csv(
+        in_path,
+        sep=args.sep,
+        dtype=dtype_map,
+        usecols=usecols,
+        engine="python",
+        on_bad_lines="skip",
+        chunksize=args.chunksize,
+        skipinitialspace=True
+    ):
         chunk.columns = normalize_headers(chunk.columns)
+
+        # DTE filter
         if "DTE" in chunk.columns:
             chunk["DTE"] = pd.to_numeric(chunk["DTE"], errors="coerce")
             chunk = chunk[(chunk["DTE"] >= 0) & (chunk["DTE"] <= 14)]
 
+        # Time filter
         if "QUOTE_READTIME" in chunk.columns:
             hhmm = chunk["QUOTE_READTIME"].map(time_hhmm)
             mask = hhmm.isin(TIME_WHITELIST)
@@ -147,19 +176,24 @@ def main():
         if chunk.empty:
             continue
 
+        # Numeric coercion & distances
         ensure_numeric(chunk)
         chunk = compute_distances(chunk)
 
+        # Group & select per (QUOTE_READTIME, EXPIRE_DATE)
         group_cols = [c for c in ["QUOTE_READTIME", "EXPIRE_DATE"] if c in chunk.columns]
         if group_cols:
-            selected = (chunk.groupby(group_cols, dropna=False, sort=False, group_keys=False)
-                             .apply(select_10_above_below))
+            selected = (
+                chunk.groupby(group_cols, dropna=False, sort=False, group_keys=False)
+                     .apply(select_10_above_below)
+            )
         else:
             selected = select_10_above_below(chunk)
 
         if selected.empty:
             continue
 
+        # Output columns order
         cols = [c for c in OUTPUT_ORDER if c in selected.columns]
         extras = [c for c in ["QUOTE_DATE","QUOTE_TIME_HOURS","EXPIRE_UNIX",
                               "C_DELTA","C_GAMMA","C_VEGA","C_RHO",
