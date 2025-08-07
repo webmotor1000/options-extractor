@@ -112,7 +112,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", dest="out", required=True)
-    ap.add_argument("--sep", default="\t")
+    ap.add_argument("--sep", default="(\\t|,\\s+)")
     ap.add_argument("--chunksize", type=int, default=250000)
     args = ap.parse_args()
 
@@ -122,7 +122,8 @@ def main():
     header_written = False
 
     # Probe header to normalize names
-    sample = pd.read_csv(in_path, sep=args.sep, nrows=1, dtype=str, engine="python", on_bad_lines="skip")
+    sample = pd.read_csv(in_path, sep=args.sep, nrows=1, dtype=str,
+                     engine="python", on_bad_lines="skip", skipinitialspace=True)
     sample.columns = normalize_headers(sample.columns)
     usecols = list(set(sample.columns))  # read all available columns
 
@@ -130,7 +131,7 @@ def main():
     for col in usecols:
         dtype_map[col] = NUMERIC.get(col, "string")
 
-    for chunk in pd.read_csv(in_path, sep=args.sep, dtype=dtype_map, usecols=usecols,
+    for chunk in pd.read_csv(in_path, sep=args.sep, dtype=dtype_map, usecols=usecols, skipinitialspace=True,
                              engine="python", on_bad_lines="skip", chunksize=args.chunksize):
         chunk.columns = normalize_headers(chunk.columns)
         if "DTE" in chunk.columns:
