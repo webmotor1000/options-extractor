@@ -23,7 +23,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r scripts/requirements.txt
           sudo apt-get update
           sudo apt-get install -y p7zip-full
 
@@ -53,7 +53,7 @@ jobs:
           for f in data/*.txt; do
             echo "Processing $f"
             out="outputs/$(basename "${f%.txt}").csv"
-            python extract_options.py --in "$f" --out "$out" --sep $'\t'
+            python scripts/extract_options.py --in "$f" --out "$out" --sep $'\t'
           done
           ls -lah outputs || true
 
