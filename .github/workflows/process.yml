@@ -110,9 +110,4 @@ jobs:
           name: processed-csvs
           path: outputs/**
           if-no-files-found: warn
-          - name: Upload CSVs
-  uses: actions/upload-artifact@v3
-  with:
-    name: csv_outputs
-    path: outputs/*.csv
 
