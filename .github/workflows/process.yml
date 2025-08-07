@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       download_url:
-        description: "Link direto para download (.7z ou .txt)"
+        description: "Link direto para download (.7z/.zip/.txt)"
         required: false
         default: ""
 
@@ -25,19 +25,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
           sudo apt-get update
-          sudo apt-get install -y p7zip-full
+          sudo apt-get install -y p7zip-full unzip
 
       - name: Prepare folders
         run: |
-          mkdir -p data outputs
+          mkdir -p data outputs data/flat
 
       - name: Download data (if URL provided)
         if: ${{ github.event.inputs.download_url != '' }}
         run: |
+          set -xe
           echo "Downloading from: ${{ github.event.inputs.download_url }}"
           curl -L "${{ github.event.inputs.download_url }}" -o data/input.bin
           file data/input.bin || true
-          # Tenta extrair como .7z; se falhar, tenta unzip; se não for zip, assume .txt
+
+          # Tenta extrair como 7z; se falhar, tenta zip; senão assume .txt
           if 7z l data/input.bin >/dev/null 2>&1; then
             7z x -odata data/input.bin
           elif unzip -l data/input.bin >/dev/null 2>&1; then
@@ -45,22 +47,66 @@ jobs:
           else
             mv data/input.bin data/input.txt
           fi
-          ls -lah data || true
 
-      - name: Process all .txt files in data/
+          echo "Conteúdo de data/ após download+extração:"
+          find data -maxdepth 3 -type f -printf "%p\n" | sort || true
+
+      - name: Collect TXT recursively into data/flat
         run: |
-          shopt -s nullglob
-          for f in data/*.txt; do
-            echo "Processing $f"
-            out="outputs/$(basename "${f%.txt}").csv"
-            python scripts/extract_options.py --in "$f" --out "$out" --sep "(\\t|,\\s+)"
+          set -xe
+          # Se houver zips/7z aninhados, tenta extrair também
+          find data -type f \( -iname "*.7z" -o -iname "*.zip" \) -print -exec 7z x -odata {} \; || true
 
+          # Copia todos .txt para data/flat (qualquer subpasta)
+          find data -type f -iname "*.txt" -print -exec cp {} data/flat/ \; || true
+
+          echo "TXT detectados em data/flat:"
+          ls -lah data/flat || true
+
+      - name: Process all .txt files in data/flat
+        run: |
+          set -xe
+          shopt -s nullglob
+          count=0
+          for f in data/flat/*.txt; do
+            echo "------------------------------------------------------------"
+            echo "Processing $f"
+            count=$((count+1))
+            head -n 2 "$f" || true
+            base="$(basename "${f%.txt}")"
+            out="outputs/${base}.csv"
+            # Aceita TAB OU vírgula+espaço como separador
+            python scripts/extract_options.py --in "$f" --out "$out" --sep "(\\t|,\\s+)"
+            echo "Gerado: $out"
           done
+
+          if [ "$count" -eq 0 ]; then
+            echo "NENHUM .txt encontrado. Verifique o pacote baixado."
+            echo "Árvore completa de data/:"
+            find data -maxdepth 5 -printf "%p\n" | sort || true
+          fi
+
+          echo "Arquivos em outputs/:"
           ls -lah outputs || true
+
+          # CSV combinado (se houver individuais)
+          if ls outputs/*.csv >/dev/null 2>&1; then
+            echo "Juntando CSVs em outputs/combined_all.csv"
+            first=1
+            for c in outputs/*.csv; do
+              if [ "$first" -eq 1 ]; then
+                cat "$c" > outputs/combined_all.csv
+                first=0
+              else
+                tail -n +2 "$c" >> outputs/combined_all.csv
+              fi
+            done
+            echo "Combined gerado: outputs/combined_all.csv"
+          fi
 
       - name: Upload CSVs
         uses: actions/upload-artifact@v4
         with:
           name: processed-csvs
-          path: outputs/*.csv
+          path: outputs/**
           if-no-files-found: warn
