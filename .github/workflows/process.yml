@@ -104,6 +104,13 @@ jobs:
             echo "Combined gerado: outputs/combined_all.csv"
           fi
 
+      - name: List generated files
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Files ==="
+          ls -R
+
       - name: Upload CSVs
         uses: actions/upload-artifact@v4
         with:
